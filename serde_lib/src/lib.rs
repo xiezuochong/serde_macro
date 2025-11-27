@@ -1,7 +1,8 @@
-pub use serde_derive::EncodeDecodePayload;
+#[cfg(feature = "derive")]
+pub use serde_derive::{Decoder, Encoder};
 
-pub use bytes::BytesMut;
 pub use byte;
+pub use bytes::BytesMut;
 
 pub trait Encode: Sized {
     fn encode(&self, buf: &mut BytesMut);

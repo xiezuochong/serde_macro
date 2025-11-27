@@ -5,4 +5,4 @@ edition = "2024"
 
 [dependencies]
 bytes = "1"
-serde_lib = { path = "../serde_lib"}
+serde_lib = { path = "../serde_lib", features = ["derive"] }

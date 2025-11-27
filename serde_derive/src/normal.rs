@@ -59,11 +59,13 @@ pub fn gen_encode_for_normal(
     }
 }
 
-pub fn gen_decode_for_normal(field: &syn::Field, order: ByteOrder) -> proc_macro2::TokenStream {
+pub fn gen_decode_for_normal(
+    field: &syn::Field,
+    order: ByteOrder,
+    field_map: &HashMap<syn::Ident, syn::Type>,
+) -> proc_macro2::TokenStream {
     let name = field.ident.as_ref().unwrap();
     let ty = &field.ty;
-
-    let is_be = matches!(order, ByteOrder::BE);
 
     let dynamic_len_handle = || {
         let mut len_literal = None;
@@ -76,18 +78,13 @@ pub fn gen_decode_for_normal(field: &syn::Field, order: ByteOrder) -> proc_macro
             match ident.to_string().as_str() {
                 "len" => {
                     if let Meta::List(list) = &attr.meta {
-                        let nested = syn::parse2::<MetaListParser>(list.tokens.clone())
-                            .expect("Invalid len(...) format")
-                            .0;
-                        if let Some(Meta::Path(path)) = nested.first() {
-                            let ident = path.get_ident().expect("Invalid ident");
-                            len_literal = Some(
-                                ident
-                                    .to_string()
-                                    .parse::<usize>()
-                                    .expect("len(...) must be int"),
-                            )
-                        }
+                        let lit: syn::LitInt =
+                            syn::parse2(list.tokens.clone()).expect("len(...) must be integer");
+
+                        len_literal = Some(
+                            lit.base10_parse::<usize>()
+                                .expect("len(...) parse integer failed"),
+                        );
                     }
                 }
                 "len_by_field" => {
@@ -112,17 +109,21 @@ pub fn gen_decode_for_normal(field: &syn::Field, order: ByteOrder) -> proc_macro
                 let #name = buf[*offset..*offset + slice_len].to_vec();
                 *offset += slice_len;
             },
-            (_, Some(field_ident)) => quote! {
-                let slice_len: usize = (#field_ident as usize);
-                if *offset + slice_len > buf.len() {
-                    panic!("decode error: field `{}` length out of range", stringify!(#name));
-                }
-                let #name = buf[*offset..*offset + slice_len].to_vec();
-                *offset += slice_len;
+            (_, Some(field_ident)) => {
+                let field_ty = field_map.get(&field_ident).expect("Unkown field");
 
-                // 如果你结构体里的字段类型是 u16，需要赋值给它：
-                let #field_ident: u16 = slice_len.try_into().unwrap();
-            },
+                quote! {
+                    let slice_len: usize = (#field_ident as usize);
+                    if *offset + slice_len > buf.len() {
+                        panic!("decode error: field `{}` length out of range", stringify!(#name));
+                    }
+                    let #name = buf[*offset..*offset + slice_len].to_vec();
+                    *offset += slice_len;
+
+                    // 如果你结构体里的字段类型是 u16，需要赋值给它：
+                    let #field_ident: #field_ty = slice_len.try_into().unwrap();
+                }
+            }
             _ => panic!("Slice Or Vec Need len(..) or len_by_field(..)"),
         }
     };

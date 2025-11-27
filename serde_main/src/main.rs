@@ -1,7 +1,7 @@
 use bytes::{BufMut, BytesMut};
-use serde_lib::{Decode, Encode, EncodeDecodePayload};
+use serde_lib::{Decode, Decoder, Encode, Encoder};
 
-#[derive(Debug, EncodeDecodePayload)]
+#[derive(Debug, Encoder, Decoder)]
 #[ByteOrder(LE)]
 struct P {
     f: bool,
@@ -17,18 +17,21 @@ struct P {
     #[len_by_field(len)]
     list: Vec<u8>,
     r: R,
+    #[len(2)]
+    list2: Vec<u8>,
 }
 
-#[derive(Debug, EncodeDecodePayload)]
+#[derive(Debug, Encoder, Decoder)]
 #[ByteOrder(LE)]
 struct R {
     a: u8,
     b: u32,
+    #[len_by_field(b)]
+    list: Vec<u8>,
 }
 
 fn main() {
     let mut bytes = BytesMut::new();
-    let list3 = [5, 6];
     let p = P {
         f: true,
         a: 1,
@@ -38,7 +41,12 @@ fn main() {
         bit3: 1,
         len: 1,
         list: vec![1],
-        r: R { a: 1, b: 1 },
+        r: R {
+            a: 1,
+            b: 1,
+            list: vec![5],
+        },
+        list2: vec![3, 9]
     };
     p.encode(&mut bytes);
     println!("encode {:02X?}", bytes);
