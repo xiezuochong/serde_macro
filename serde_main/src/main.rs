@@ -1,9 +1,9 @@
 use bytes::{BufMut, BytesMut};
-use serde_lib::{Encode, Encoder};
+use serde_lib::{Decode, Decoder, Encode, Encoder};
 
-#[derive(Debug, Encoder)]
+#[derive(Debug, Encoder, Decoder)]
 #[ByteOrder(LE)]
-struct P<'a> {
+struct P {
     // f: bool,
     // a: u8,
     // b: u32,
@@ -13,20 +13,11 @@ struct P<'a> {
     // bit2: u8,
     // #[bitfield(len = 5, end)]
     // bit3: u8,
-    // len: u16,
-    list: Vec<u8>,
-    r: R,
-    list2: Vec<u8>,
-    str: &'a str,
-    str_list: Vec<String>,
+    len: u16,
+    #[delimiter(0)]
+    str1: String,
 }
 
-#[derive(Debug, Encoder)]
-#[ByteOrder(LE)]
-struct R {
-    a: u8,
-    list: Vec<u8>,
-}
 
 fn main() {
     let mut bytes = BytesMut::new();
@@ -37,16 +28,16 @@ fn main() {
         // bit1: 1,
         // bit2: 1,
         // bit3: 1,
-        // len: 1,
-        list: vec![1],
-        r: R {
-            a: 1,
-            list: vec![5],
-        },
-        list2: vec![3, 9],
-        str: "123",
-        str_list: vec!["1".to_string(), "456".to_string()],
+        len: 1,
+        str1: "123".to_string(),
     };
     p.encode(&mut bytes);
     println!("encode {:02X?}", bytes);
+
+    bytes.put_u8(0);
+
+    let mut offset = 0;
+    let res = P::decode(bytes.as_ref(), &mut offset);
+
+    println!("{:?}", res);
 }

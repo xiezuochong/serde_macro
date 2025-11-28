@@ -97,7 +97,7 @@ pub fn encoder_derive(input: TokenStream) -> TokenStream {
     encoder::encode_input(input)
 }
 
-#[proc_macro_derive(Decoder, attributes(ByteOrder, bitfield, len_by_field, len))]
+#[proc_macro_derive(Decoder, attributes(ByteOrder, bitfield, len_by_field, len, delimiter))]
 pub fn decoder_derive(input: TokenStream) -> TokenStream {
     decoder::decode_input(input)
 }
