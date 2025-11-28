@@ -1,62 +1,158 @@
-use super::*;
+use std::collections::HashMap;
 
-pub fn gen_encode_for_normal(
-    name: &syn::Ident,
-    ty: &Type,
-    byte_order: ByteOrder,
-) -> proc_macro2::TokenStream {
-    match ty {
-        Type::Array(_) => {
-            quote! { buf.extend_from_slice(&self.#name); }
+use proc_macro::TokenStream;
+use quote::quote;
+use syn::{Data, DeriveInput, Fields, Meta, Type, parse_macro_input};
+
+use crate::{
+    ByteOrder, MetaListParser,
+    bitfield::{BitAttr, BitFieldAccum},
+    is_struct_type,
+};
+
+pub fn decode_input(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let struct_name = &input.ident;
+
+    let mut field_map = HashMap::new();
+
+    let mut decode_stmts = Vec::new();
+
+    let mut acc = BitFieldAccum::new();
+    let mut field_inits = Vec::new();
+    let mut byte_order = ByteOrder::LE;
+
+    for attr in &input.attrs {
+        if attr.path().is_ident("ByteOrder") {
+            let meta = attr.parse_args::<syn::Ident>().unwrap();
+            let s = meta.to_string().to_uppercase();
+
+            match s.as_str() {
+                "LE" => byte_order = ByteOrder::LE,
+                "BE" => byte_order = ByteOrder::BE,
+                _ => panic!("Invalid byte order: {}", s),
+            }
         }
-        Type::Reference(type_ref) => {
-            if let Type::Slice(_) = &*type_ref.elem {
-                quote! { buf.extend_from_slice(&self.#name); }
-            } else {
+    }
+
+    if let Data::Struct(data) = &input.data {
+        if let Fields::Named(fields) = &data.fields {
+            for field in &fields.named {
+                let name = field.ident.clone().unwrap();
+                let ty = &field.ty;
+
+                field_map.insert(name.clone(), ty.clone());
+
+                if is_struct_type(ty) {
+                    if acc.is_active() {
+                        panic!("Missing end in bitfield sequence");
+                    }
+                    decode_stmts.push(quote! {
+                        let #name = #ty::decode(&buf, offset)?;
+                    });
+                    field_inits.push(quote! { #name });
+                } else {
+                    if let Some(attr) = BitAttr::from_field(&field) {
+                        // bitfield 字段
+                        acc.push(name.clone(), ty.clone(), attr.bit_len);
+
+                        if attr.bit_end {
+                            decode_stmts.push(gen_bitfield_decode(&acc, byte_order));
+                            for (f, _, _) in &acc.fields {
+                                field_inits.push(quote! { #f });
+                            }
+                            acc.clear();
+                        }
+                    } else {
+                        if acc.is_active() {
+                            panic!("Missing end in bitfield sequence");
+                        }
+                        decode_stmts.push(gen_decode_for_normal(&field, byte_order, &field_map));
+                        field_inits.push(quote! { #name });
+                    }
+                }
+            }
+        }
+    }
+
+    if acc.is_active() {
+        panic!("Bitfield block started but no end found");
+    }
+
+    let generics = &input.generics;
+
+    let output = quote! {
+        impl #generics ::serde_lib::Decode for #struct_name #generics {
+            fn decode(buf: &[u8], offset: &mut usize) -> ::std::result::Result<Self, ::serde_lib::byte::Error> {
+                use ::bytes::Buf;
+
+                #(#decode_stmts)*
+
+                Ok(Self {
+                    #(#field_inits),*
+                })
+            }
+        }
+    };
+
+    output.into()
+}
+
+pub fn gen_bitfield_decode(acc: &BitFieldAccum, byte_order: ByteOrder) -> proc_macro2::TokenStream {
+    let mut stmts = Vec::new();
+
+    let byte_len = (acc.total_bits + 7) / 8;
+
+    // --- 字节序专用 decode 模板 ---
+    let read_bits = match byte_order {
+        ByteOrder::LE => quote! {
+            let mut bits: u64 = 0;
+            // BE：高字节在前
+            for i in 0..#byte_len {
+                bits |= (buf[*offset + i] as u64) << ((#byte_len - 1 - i) * 8);
+            }
+            let mut bit_shift: u32 = 0;
+            *offset += #byte_len;
+        },
+        ByteOrder::BE => quote! {
+            let mut bits: u64 = 0;
+            // LE：低字节在前
+            for i in 0..#byte_len {
+                bits |= (buf[*offset + i] as u64) << (i * 8);
+            }
+            let mut bit_shift: u32 = 0;
+            *offset += #byte_len;
+        },
+    };
+
+    stmts.push(read_bits);
+
+    for (name, ty, bit_len) in &acc.fields {
+        let stmt = match ty {
+            Type::Path(tp) => {
+                let ident = &tp.path.segments.last().unwrap().ident;
+                match ident.to_string().as_str() {
+                    "bool" => quote! {
+                        let mask: u64 = ::serde_lib::mask_for_bits(#bit_len as u32);
+                        let #name: bool = ((bits >> bit_shift) & mask) != 0;
+                        bit_shift += #bit_len as u32;
+                    },
+                    _ => quote! {
+                        let mask: u64 = ::serde_lib::mask_for_bits(#bit_len as u32);
+                        let #name: #ty = ((bits >> bit_shift) & mask) as #ty;
+                        bit_shift += #bit_len as u32;
+                    },
+                }
+            }
+            _ => {
                 quote! {}
             }
-        }
-        Type::Path(tp) => {
-            let ident = &tp.path.segments.last().unwrap().ident;
-            match ident.to_string().as_str() {
-                "bool" => quote! { buf.put_u8(self.#name as u8); },
-                "u8" => quote! { buf.put_u8(self.#name); },
-                "i8" => quote! { buf.put_i8(self.#name); },
-                "u16" => match byte_order {
-                    ByteOrder::BE => quote! { buf.put_u16_be(self.#name); },
-                    ByteOrder::LE => quote! { buf.put_u16_le(self.#name); },
-                },
-                "u32" => match byte_order {
-                    ByteOrder::BE => quote! { buf.put_u32_be(self.#name); },
-                    ByteOrder::LE => quote! { buf.put_u32_le(self.#name); },
-                },
-                "i32" => match byte_order {
-                    ByteOrder::BE => quote! { buf.put_i32_be(self.#name); },
-                    ByteOrder::LE => quote! { buf.put_i32_le(self.#name); },
-                },
-                "f32" => match byte_order {
-                    ByteOrder::BE => quote! { buf.put_f32_be(self.#name); },
-                    ByteOrder::LE => quote! { buf.put_f32_le(self.#name); },
-                },
-                "u64" => match byte_order {
-                    ByteOrder::BE => quote! { buf.put_u64_be(self.#name); },
-                    ByteOrder::LE => quote! { buf.put_u64_le(self.#name); },
-                },
-                "i64" => match byte_order {
-                    ByteOrder::BE => quote! { buf.put_i64_be(self.#name); },
-                    ByteOrder::LE => quote! { buf.put_i64_le(self.#name); },
-                },
-                "f64" => match byte_order {
-                    ByteOrder::BE => quote! { buf.put_f64_be(self.#name); },
-                    ByteOrder::LE => quote! { buf.put_f64_le(self.#name); },
-                },
-                "Vec" => quote! { buf.extend_from_slice(&self.#name); },
-                _ => quote! {},
-            }
-        }
+        };
 
-        _ => quote! {},
+        stmts.push(stmt);
     }
+
+    quote! { #(#stmts)* }
 }
 
 pub fn gen_decode_for_normal(

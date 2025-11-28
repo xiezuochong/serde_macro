@@ -1,6 +1,3 @@
 [workspace]
 resolver = "3"
-members = ["serde_derive",
-    "serde_lib",
-    "serde_main"
-]
+members = ["serde_derive", "serde_lib", "serde_main"]
