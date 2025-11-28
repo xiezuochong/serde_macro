@@ -6,7 +6,7 @@ use serde_lib::{Decode, Decoder, Encode, Encoder};
 struct P {
     // f: bool,
     // a: u8,
-    // b: u32,
+    b: u32,
     // #[bitfield(len = 2)]
     // bit1: u8,
     // #[bitfield(len = 1)]
@@ -24,7 +24,7 @@ fn main() {
     let p = P {
         // f: true,
         // a: 1,
-        // b: 0,
+        b: 0,
         // bit1: 1,
         // bit2: 1,
         // bit3: 1,
