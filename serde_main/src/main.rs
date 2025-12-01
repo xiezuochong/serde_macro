@@ -2,10 +2,10 @@ use bytes::{BufMut, BytesMut};
 use serde_lib::{Decode, Decoder, Encode, Encoder};
 
 // 驱动器参数Payload
-#[derive(Debug, Encoder)]
+#[derive(Debug, Encoder, Decoder)]
 pub struct MoterDriverParam {
     foo: Foo,
-    readparam_result: u8, 
+    readparam_result: u8,
     max_speed_limit: u32, //电机最大转速限制（rpm）
     max_acc_speed: u32,   //电机最大加速度限制 cnt/s/ms
     max_dec_speed: u32,   //电机最大减速度限制 cnt/s/ms
@@ -30,7 +30,7 @@ pub struct MoterDriverParam {
     position_loop_time: u32,         //速度跟随容错时间ms
 }
 
-#[derive(Debug, Encoder, Clone, Copy)]
+#[derive(Debug, Encoder, Decoder, Clone, Copy)]
 #[repr(u16)]
 enum Foo {
     A = 1,
@@ -66,24 +66,8 @@ fn main() {
     p.encode(&mut bytes);
     println!("encode {:02X?}", bytes);
 
-//     let mut offset = 0;
-//     let res = MoterDriverParam::decode(bytes.as_ref(), &mut offset);
+    let mut offset = 0;
+    let res = MoterDriverParam::decode(bytes.as_ref(), &mut offset);
 
-//     println!("{:?}", res);
-}
-
-
-
-#[derive(Debug, Clone, Copy)]
-#[repr(u16)]
-enum Foo1 {
-    A = 1,
-    B = 2,
-}
-
-
-impl Foo1 {
-    fn encode(&self) {
-        let data = *self as u16;
-    }
+    println!("{:?}", res);
 }

@@ -8,7 +8,7 @@ use crate::{
     ByteOrder,
     bitfield::{BitAttr, BitFieldAccum},
     ident_to_type, is_primitive_type, is_primitive_type_str, is_std_type, is_std_type_str,
-    is_struct_type, parse_int,
+    is_struct_type,
 };
 
 pub fn encode_input(input: TokenStream) -> TokenStream {
@@ -76,8 +76,11 @@ pub fn encode_input(input: TokenStream) -> TokenStream {
                 if attr.path().is_ident("repr") {
                     if let Meta::List(list) = &attr.meta {
                         if let Ok(ident) = syn::parse2::<syn::Ident>(list.tokens.clone()) {
-                            if is_primitive_type_str(ident.to_string().as_str()) {
-                                primitive_ident = Some(ident);
+                            let ident_str = ident.to_string();
+                            if is_primitive_type_str(&ident_str) {
+                                if ident_str.ne("bool") {
+                                    primitive_ident = Some(ident);
+                                }
                             }
                         }
                     }
@@ -87,22 +90,11 @@ pub fn encode_input(input: TokenStream) -> TokenStream {
             let primitive_ident = primitive_ident.expect("need repr(u8/u16/...)");
             let primitive_ty = ident_to_type(&primitive_ident);
 
-            let stmt = {
-                match primitive_ident.to_string().as_str() {
-                    "bool" => quote! {},
-                    "u8" => quote! { buf.put_i8(*self as #primitive_ty) },
-                    "i8" => quote! { buf.put_i8(*self as #primitive_ty) },
-                    _ => match byte_order {
-                        ByteOrder::BE => quote! {
-                            buf.extend_from_slice(&(*self as #primitive_ty).to_be_bytes())
-                        },
-                        ByteOrder::LE => quote! {
-                            buf.extend_from_slice(&(*self as #primitive_ty).to_le_bytes())
-                        },
-                    },
-                }
-            };
-            encode_stmts.push(stmt);
+            let handle = encode_primitive_data(&primitive_ty, byte_order);
+            encode_stmts.push(quote! {
+                let v = *self as #primitive_ty;
+                #handle
+            });
         }
         _ => panic!("Union not suppiort"),
     }
@@ -255,39 +247,10 @@ fn encode_primitive_data(ty: &Type, byte_order: ByteOrder) -> proc_macro2::Token
                 "bool" => quote! { buf.put_u8(v as u8); },
                 "u8" => quote! { buf.put_u8(v); },
                 "i8" => quote! { buf.put_i8(v); },
-                "u16" => match byte_order {
-                    ByteOrder::BE => quote! { buf.put_u16_be(v); },
-                    ByteOrder::LE => quote! { buf.put_u16_le(v); },
+                _ => match byte_order {
+                    ByteOrder::BE => quote! { buf.extend_from_slice(&v.to_be_bytes()); },
+                    ByteOrder::LE => quote! { buf.extend_from_slice(&v.to_le_bytes()); },
                 },
-                "i16" => match byte_order {
-                    ByteOrder::BE => quote! { buf.put_i16_be(v); },
-                    ByteOrder::LE => quote! { buf.put_i16_le(v); },
-                },
-                "u32" => match byte_order {
-                    ByteOrder::BE => quote! { buf.put_u32_be(v); },
-                    ByteOrder::LE => quote! { buf.put_u32_le(v); },
-                },
-                "i32" => match byte_order {
-                    ByteOrder::BE => quote! { buf.put_i32_be(v); },
-                    ByteOrder::LE => quote! { buf.put_i32_le(v); },
-                },
-                "u64" => match byte_order {
-                    ByteOrder::BE => quote! { buf.put_u64_be(v); },
-                    ByteOrder::LE => quote! { buf.put_u64_le(v); },
-                },
-                "i64" => match byte_order {
-                    ByteOrder::BE => quote! { buf.put_i64_be(v); },
-                    ByteOrder::LE => quote! { buf.put_i64_le(v); },
-                },
-                "f32" => match byte_order {
-                    ByteOrder::BE => quote! { buf.put_f32_be(v); },
-                    ByteOrder::LE => quote! { buf.put_f32_le(v); },
-                },
-                "f64" => match byte_order {
-                    ByteOrder::BE => quote! { buf.put_f64_be(v); },
-                    ByteOrder::LE => quote! { buf.put_f64_le(v); },
-                },
-                _ => quote! {},
             }
         }
         _ => quote! {},

@@ -1,13 +1,15 @@
 use std::collections::HashMap;
 
 use proc_macro::TokenStream;
+use proc_macro2::Span;
 use quote::quote;
 use syn::{Data, DeriveInput, Fields, Ident, Meta, Type, parse_macro_input};
 
 use crate::{
     ByteOrder, MetaListParser,
     bitfield::{BitAttr, BitFieldAccum},
-    is_primitive_type, is_primitive_type_str, is_std_type, is_std_type_str, is_struct_type,
+    ident_to_type, is_primitive_type, is_primitive_type_str, is_std_type_str,
+    is_struct_type, primitive_type_size,
 };
 
 #[derive(Default)]
@@ -103,88 +105,144 @@ pub fn decode_input(input: TokenStream) -> TokenStream {
         }
     }
 
-    if let Data::Struct(data) = &input.data {
-        if let Fields::Named(fields) = &data.fields {
-            for field in &fields.named {
-                let name = field.ident.clone().unwrap();
-                let ty = &field.ty;
-
-                let mut field_attrs = FieldAttrs::default();
-
-                for attr in &field.attrs {
-                    let Some(ident) = attr.path().get_ident() else {
-                        continue;
-                    };
-
-                    match ident.to_string().as_str() {
-                        "len" => {
-                            if let Meta::List(list) = &attr.meta {
-                                let lit: syn::LitInt = syn::parse2(list.tokens.clone())
-                                    .expect("len(...) must be integer");
-
-                                field_attrs.set_len(
-                                    lit.base10_parse::<usize>()
-                                        .expect("len(...) parse integer failed"),
-                                );
+    match &input.data {
+        Data::Enum(data_enum) => {
+            // 1. 获取 repr 类型
+            let mut primitive_ident = None;
+            for attr in &input.attrs {
+                if attr.path().is_ident("repr") {
+                    if let Meta::List(list) = &attr.meta {
+                        if let Ok(id) = syn::parse2::<syn::Ident>(list.tokens.clone()) {
+                            let id_str = id.to_string();
+                            if is_primitive_type_str(&id_str) && id_str != "bool" {
+                                primitive_ident = Some(id);
                             }
                         }
-                        "len_by_field" => {
-                            if let Meta::List(list) = &attr.meta {
-                                let nested = syn::parse2::<MetaListParser>(list.tokens.clone())
-                                    .expect("Invalid len_by_field(...) format")
-                                    .0;
-                                if let Some(Meta::Path(path)) = nested.first() {
-                                    field_attrs.set_len_by_field(path.get_ident().unwrap().clone());
-                                }
-                            }
-                        }
-                        "delimiter" => {
-                            if let Meta::List(list) = &attr.meta {
-                                let lit: syn::LitInt = syn::parse2(list.tokens.clone())
-                                    .expect("delimiter(...) must be integer");
-
-                                field_attrs.set_str_delimiter(
-                                    lit.base10_parse::<u8>()
-                                        .expect("delimiter(...) parse u8 failed"),
-                                );
-                            }
-                        }
-                        _ => (),
                     }
                 }
+            }
 
-                field_map.insert(name.clone(), (ty.clone(), field_attrs));
+            let primitive_ident =
+                primitive_ident.expect("Enum must have #[repr(u8/u16/u32/u64/...)]");
+            let primitive_ty = ident_to_type(&primitive_ident);
 
-                if is_struct_type(ty) {
-                    if acc.is_active() {
-                        panic!("Missing end in bitfield sequence");
-                    }
-                    decode_stmts.push(quote! {
-                        let #name = #ty::decode(buf, offset)?;
-                    });
-                    field_inits.push(quote! { #name });
-                } else {
-                    if let Some(attr) = BitAttr::from_field(&field) {
-                        // bitfield 字段
-                        acc.push(name.clone(), ty.clone(), attr.bit_len);
+            // 2. 枚举名
+            let enum_ident = &input.ident;
 
-                        if attr.bit_end {
-                            decode_stmts.push(gen_bitfield_decode(&acc, byte_order));
-                            for (f, _, _) in &acc.fields {
-                                field_inits.push(quote! { #f });
+            // 3. 构建 match arms
+            let match_arms = data_enum.variants.iter().map(|v| {
+                let v_ident = &v.ident;
+                let discr = v.discriminant.as_ref().map(|(_, expr)| expr);
+
+                let value_expr = match discr {
+                    Some(expr) => quote! { (#expr) as #primitive_ty },
+                    None => quote! { (#enum_ident::#v_ident as #primitive_ty) },
+                };
+
+                quote! {
+                    x if x == #value_expr => #enum_ident::#v_ident,
+                }
+            });
+
+            // 4. 生成 let raw = decode(...)
+            let var_ident = syn::Ident::new("raw", Span::call_site());
+            let read_handle = decode_primitive_data(&var_ident, &primitive_ty, byte_order);
+
+            // 5. 生成最终 decode
+            decode_stmts.push(quote! {
+                #read_handle
+
+                let v = match #var_ident {
+                    #(#match_arms)*
+                    _ => panic!("Invalid enum value {} for {}", #var_ident, stringify!(#enum_ident)),
+                };
+            });
+        }
+        Data::Struct(date_struct) => {
+            if let Fields::Named(fields) = &date_struct.fields {
+                for field in &fields.named {
+                    let name = field.ident.clone().unwrap();
+                    let ty = &field.ty;
+
+                    let mut field_attrs = FieldAttrs::default();
+
+                    for attr in &field.attrs {
+                        let Some(ident) = attr.path().get_ident() else {
+                            continue;
+                        };
+
+                        match ident.to_string().as_str() {
+                            "len" => {
+                                if let Meta::List(list) = &attr.meta {
+                                    let lit: syn::LitInt = syn::parse2(list.tokens.clone())
+                                        .expect("len(...) must be integer");
+
+                                    field_attrs.set_len(
+                                        lit.base10_parse::<usize>()
+                                            .expect("len(...) parse integer failed"),
+                                    );
+                                }
                             }
-                            acc.clear();
+                            "len_by_field" => {
+                                if let Meta::List(list) = &attr.meta {
+                                    let nested = syn::parse2::<MetaListParser>(list.tokens.clone())
+                                        .expect("Invalid len_by_field(...) format")
+                                        .0;
+                                    if let Some(Meta::Path(path)) = nested.first() {
+                                        field_attrs
+                                            .set_len_by_field(path.get_ident().unwrap().clone());
+                                    }
+                                }
+                            }
+                            "delimiter" => {
+                                if let Meta::List(list) = &attr.meta {
+                                    let lit: syn::LitInt = syn::parse2(list.tokens.clone())
+                                        .expect("delimiter(...) must be integer");
+
+                                    field_attrs.set_str_delimiter(
+                                        lit.base10_parse::<u8>()
+                                            .expect("delimiter(...) parse u8 failed"),
+                                    );
+                                }
+                            }
+                            _ => (),
                         }
-                    } else {
+                    }
+
+                    field_map.insert(name.clone(), (ty.clone(), field_attrs));
+
+                    if is_struct_type(ty) {
                         if acc.is_active() {
                             panic!("Missing end in bitfield sequence");
                         }
-                        decode_stmts.push(gen_decode_for_normal(field, byte_order, &field_map));
+                        decode_stmts.push(quote! {
+                            let #name = #ty::decode(buf, offset)?;
+                        });
                         field_inits.push(quote! { #name });
+                    } else {
+                        if let Some(attr) = BitAttr::from_field(&field) {
+                            // bitfield 字段
+                            acc.push(name.clone(), ty.clone(), attr.bit_len);
+
+                            if attr.bit_end {
+                                decode_stmts.push(gen_bitfield_decode(&acc, byte_order));
+                                for (f, _, _) in &acc.fields {
+                                    field_inits.push(quote! { #f });
+                                }
+                                acc.clear();
+                            }
+                        } else {
+                            if acc.is_active() {
+                                panic!("Missing end in bitfield sequence");
+                            }
+                            decode_stmts.push(gen_decode_for_normal(field, byte_order, &field_map));
+                            field_inits.push(quote! { #name });
+                        }
                     }
                 }
             }
         }
+        _ => panic!(),
     }
 
     if acc.is_active() {
@@ -193,18 +251,39 @@ pub fn decode_input(input: TokenStream) -> TokenStream {
 
     let generics = &input.generics;
 
-    let output = quote! {
-        impl #generics ::serde_lib::Decode for #struct_name #generics {
-            fn decode(buf: &[u8], offset: &mut usize) -> ::std::result::Result<Self, ::serde_lib::byte::Error> {
-                use ::bytes::Buf;
+    // 判断 input 是 enum 还是 struct：如果 enum，则 decode_stmts 最后一部分应该返回 Ok(v)
+    let output = match &input.data {
+        Data::Enum(_) => {
+            // enum decode: 我们假定 decode_stmts 已经生成了 `let v = ...;` 语句
+            quote! {
+                impl #generics ::serde_lib::Decode for #struct_name #generics {
+                    fn decode(buf: &[u8], offset: &mut usize) -> ::std::result::Result<Self, ::serde_lib::byte::Error> {
+                        use ::bytes::Buf;
 
-                #(#decode_stmts)*
+                        #(#decode_stmts)*
 
-                Ok(Self {
-                    #(#field_inits),*
-                })
+                        // 最终返回枚举值 v
+                        Ok(v)
+                    }
+                }
             }
         }
+        Data::Struct(_) => {
+            quote! {
+                impl #generics ::serde_lib::Decode for #struct_name #generics {
+                    fn decode(buf: &[u8], offset: &mut usize) -> ::std::result::Result<Self, ::serde_lib::byte::Error> {
+                        use ::bytes::Buf;
+
+                        #(#decode_stmts)*
+
+                        Ok(Self {
+                            #(#field_inits),*
+                        })
+                    }
+                }
+            }
+        }
+        _ => panic!("Impossible"),
     };
 
     output.into()
@@ -552,19 +631,7 @@ fn gen_decode_vec(
 
     // primitive numeric inner types
     if is_primitive_type(inner_ty) {
-        let elem_size = match inner_ty {
-            Type::Path(tp) => {
-                let n = tp.path.segments.last().unwrap().ident.to_string();
-                match n.as_str() {
-                    "u16" | "i16" => 2usize,
-                    "u32" | "i32" | "f32" => 4usize,
-                    "u64" | "i64" | "f64" => 8usize,
-                    "u8" => 1usize,
-                    _ => 0usize,
-                }
-            }
-            _ => 0usize,
-        };
+        let elem_size = primitive_type_size(inner_ty);
 
         if elem_size == 0 {
             // fallback: try element decode loop
@@ -627,20 +694,6 @@ fn gen_decode_array(
 
     // otherwise decode per element
     if is_primitive_type(inner_ty) {
-        let elem_size = match inner_ty {
-            Type::Path(tp) => {
-                let n = tp.path.segments.last().unwrap().ident.to_string();
-                match n.as_str() {
-                    "u16" | "i16" => 2usize,
-                    "u32" | "i32" | "f32" => 4usize,
-                    "u64" | "i64" | "f64" => 8usize,
-                    "u8" => 1usize,
-                    _ => 0usize,
-                }
-            }
-            _ => 0usize,
-        };
-
         let decode_elem = decode_primitive_data(&quote::format_ident!("tmp"), inner_ty, byte_order);
 
         // create default array (requires element default) -- we fallback to using Vec then copy if necessary

@@ -54,6 +54,22 @@ fn is_primitive_type(ty: &Type) -> bool {
     }
 }
 
+fn primitive_type_size(ty: &Type) -> usize {
+    match ty {
+        Type::Path(tp) => {
+            let n = tp.path.segments.last().unwrap().ident.to_string();
+            match n.as_str() {
+                "bool"| "u8" | "i8" => 1usize,
+                "u16" | "i16" => 2usize,
+                "u32" | "i32" | "f32" => 4usize,
+                "u64" | "i64" | "f64" => 8usize,
+                _ => 0usize,
+            }
+        }
+        _ => 0usize,
+    }
+}
+
 fn is_std_type(ty: &Type) -> bool {
     match ty {
         Type::Path(tp) => {
