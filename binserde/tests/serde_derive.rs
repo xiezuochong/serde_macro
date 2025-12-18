@@ -1,4 +1,4 @@
-use binserde::{Encoder, Decoder};
+use binserde::{Decode, DecodeStr, Decoder, Encode, EncodeStr, Encoder};
 use bytes::BytesMut;
 
 #[derive(Debug, Encoder, Decoder, Default, Clone, Copy, PartialEq)]
@@ -19,27 +19,33 @@ pub struct P {
     str_: String,
     #[binserde(len_from = c)]
     vec: Vec<u8>,
+    #[binserde(bit_width = 2)]
+    d: E
 }
 
 #[test]
 fn encode_decode_roundtrip() {
     let p = P {
-        a: 4,
-        b: 2,
+        a: 3,
+        b: 1,
         c: 2,
         str_: "123456".to_string(),
         vec: vec![123, 255],
+        d: E::A,
     };
 
     let mut buf = BytesMut::with_capacity(64);
 
     // encode
-    p.encode_be(&mut buf).expect("encode failed");
+    p.encode_le(&mut buf).expect("encode failed");
+
+    // for byte in &buf {
+    //     println!("{:08b}", byte);
+    // }
 
     // decode
     let mut offset = 0;
-    let decoded = P::decode_be(&buf, &mut offset)
-        .expect("decode failed");
+    let decoded = P::decode_le(&buf, &mut offset).expect("decode failed");
 
     // assert
     assert_eq!(decoded, p);

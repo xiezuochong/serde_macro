@@ -173,7 +173,7 @@ fn decode_struct(
                     if use_default {
                         match default_value {
                             None => decode_stmts_inner.push(quote! {
-                                if *offset + (#bit_offset + #bit_width + 7) / 8 >= buf.len() {
+                                if *offset + (#bit_offset + #bit_width + 7) / 8 > buf.len() {
                                     #primitive_ty::default()
                                 } else {
                                     #no_checked_decode_stmt
@@ -184,7 +184,7 @@ fn decode_struct(
                             Some(value) => {
                                 let ident: Ident = syn::Ident::new(&value, Span::call_site());
                                 decode_stmts_inner.push(quote! {
-                                    if *offset + (#bit_offset + #bit_width + 7) / 8 >= buf.len() {
+                                    if *offset + (#bit_offset + #bit_width + 7) / 8 > buf.len() {
                                         #ident
                                     } else {
                                         #no_checked_decode_stmt
@@ -196,7 +196,7 @@ fn decode_struct(
                         }
                     } else {
                         decode_stmts_inner.push(quote! {
-                            if *offset + (#bit_offset + #bit_width + 7) / 8 >= buf.len() {
+                            if *offset + (#bit_offset + #bit_width + 7) / 8 > buf.len() {
                                 return Err(());
                             }
                             #no_checked_decode_stmt
